@@ -4,6 +4,10 @@
 #include "AliESD.h"
 #include "AliMagF.h"
 #include "AliESDfriend.h"
+#include "AliTPCclusterMI.h"
+#include "AliTPCseed.h"
+#include <TH2F.h>
+#include <TH1F.h>
 #include <TFile.h>
 #include <TTree.h>
 #include <TSystem.h>
@@ -15,12 +19,33 @@ const float kHugeChi=1e9;
 const int kAccBit=0x1<<15;
 const int kTestBit=0x1<<14;
 
+//-------------- cuts ------------->>>
+const int kMinCls = 70;
+const float kMaxDCAY = 3;
+const float kMaxDCAZ = 3;
+const float kMaxEta = 0.8;
+const float kMinPt = 1.;
+//-------------- cuts -------------<<<
+
+TTree *DebugTree=0;
+TFile *DebugFile=0;
+AliTPCclusterMI *clsODbg=0,*clsHDbg=0;
+typedef struct {
+  Float_t q2pt;
+  Float_t chi2;
+  Bool_t mtcO;
+  Bool_t mtcH;
+} dbg_t;
+dbg_t dbg;
+  
+int currEvent=-1;
 int currSlot=0;
 TFile *flIn[kNSlots]={0};
 AliESDEvent *esdEv[kNSlots]={0};
 AliESDfriend *esdFr[kNSlots]={0};
 TTree *esdTree[kNSlots]={0};
 
+float GetRowX(int row);
 void SetSlot(int s=0);
 void PrintTrack(Int_t i);
 void PrintTracks();
@@ -28,12 +53,25 @@ void ConnectFriends();
 Int_t LoadESD(const char* path, Bool_t friends=kFALSE);
 Int_t LoadEvent(Int_t iev);
 Bool_t AcceptTrack(AliESDtrack* trc);
-Float_t CompareTracks(AliESDtrack* trc0, AliESDtrack* trc1);
+Float_t CompareTracks(AliExternalTrackParam &par0,AliExternalTrackParam &par1);
 void ProcessEvent();
+void FillSeedsInfo(int itr0,int itr1);
+void CloseDebugTree();
+void BookDebugTree(const char* dbgName);
 
 
-void CompOfflHLT(const char* pathOffl, const char* pathHLT, Bool_t friends=kTRUE)
+
+TH2F *hh=0,*hdy=0,*hdz=0,
+			*hdy0=0,*hdz0=0,
+			*hdy1=0,*hdz1=0;
+
+void CompOfflHLT(const char* pathOffl, const char* pathHLT, const char* dbgName="clsDbg.root")
 {
+  //
+  Bool_t friends=kTRUE;
+  //
+  BookDebugTree(dbgName);
+  //
   SetSlot(0);
   int nevOffl = LoadESD(pathOffl,friends);
   SetSlot(1);
@@ -44,15 +82,16 @@ void CompOfflHLT(const char* pathOffl, const char* pathHLT, Bool_t friends=kTRUE
     exit(1);
   }
   //
-  for (int iev=0;iev<nevOffl;iev++) {
+  for (currEvent=0;currEvent<nevOffl;currEvent++) {
     SetSlot(0);
-    LoadEvent(iev);
+    LoadEvent(currEvent);
     SetSlot(1);
-    LoadEvent(iev);
-    if (iev==0) esdEv[0]->InitMagneticField();
+    LoadEvent(currEvent);
+    if (currEvent==0) esdEv[0]->InitMagneticField();
     ProcessEvent();
   }
   //
+  CloseDebugTree();
 }
 
 //===========================================================
@@ -68,43 +107,93 @@ void ProcessEvent()
     chiMatch[itr0] = kHugeChi;
     AliESDtrack* trc0 = esdEv[0]->GetTrack(itr0);    
     if (!AcceptTrack(trc0)) continue;
+    AliExternalTrackParam par0 = *trc0->GetInnerParam();
+    //
     for (int itr1=0;itr1<ntr1;itr1++) {
       AliESDtrack* trc1 = esdEv[1]->GetTrack(itr1);
       if (trc0->Charge()!=trc1->Charge()) continue;
       if (!AcceptTrack(trc1)) continue;
       //
-      float chi2 = CompareTracks(trc0,trc1);
+      AliExternalTrackParam par1 = *trc1->GetInnerParam();
+      //
+      float chi2 = CompareTracks(par0,par1);
       if (chi2<chiMatch[itr0]) {
 	chiMatch[itr0] = chi2;
 	bestMatch[itr0] = itr1;
       }
       //
     }
-    printf("%d -> %d | %f\n",itr0,bestMatch[itr0],chiMatch[itr0]);
-  }
-  
+    if (bestMatch[itr0]<0) continue;
+    //
+    double qy2x = par0.GetY()/par0.GetX()*par0.Charge();
+    //    printf("Ev.%4d | tr %4d -> %4d | %f %+.4f (%+f %+f)\n",currEvent,itr0,bestMatch[itr0],chiMatch[itr0],qy2x,par0.GetY(),par0.GetX());
+    hh->Fill(qy2x,chiMatch[itr0]);
+    dbg.chi2 = chiMatch[itr0];
+    FillSeedsInfo(itr0,bestMatch[itr0]);
+    //
+  }  
 }
 
 //___________________________________________________________
-Float_t CompareTracks(AliESDtrack* trc0, AliESDtrack* trc1)
+void FillSeedsInfo(int itr0,int itr1)
+{
+  const AliESDtrack* trc0 = esdEv[0]->GetTrack(itr0);
+  const AliESDtrack* trc1 = esdEv[1]->GetTrack(itr1);
+  const AliESDfriendTrack* trf0 = trc0->GetFriendTrack();
+  const AliESDfriendTrack* trf1 = trc1->GetFriendTrack();
+  if (!trf0||!trf1) return;
+  const AliTPCseed* sd0 = (AliTPCseed*)trf0->GetTPCseed();
+  const AliTPCseed* sd1 = (AliTPCseed*)trf1->GetTPCseed();
+  if (!sd0||!sd1) return;
+  //
+  dbg.mtcO = trc0->IsOn(AliESDtrack::kITSrefit);
+  dbg.mtcH = trc1->IsOn(AliESDtrack::kITSrefit);  
+  dbg.q2pt = trc0->GetParameter()[4];
+
+  // fill clusters difference
+  for (int ir=0;ir<159;ir++) {
+    const AliTPCclusterMI* cls0 = sd0->GetClusterFast(ir);
+    const AliTPCclusterMI* cls1 = sd1->GetClusterFast(ir);
+    if (!cls0 || !cls1 || cls0->GetDetector()!=cls1->GetDetector()) continue;
+    //
+    *clsODbg = *cls0;
+    *clsHDbg = *cls1;    
+    DebugTree->Fill();
+    //
+    float qy2x = cls0->GetY()/GetRowX(ir)*trc0->Charge();
+    hdy->Fill(qy2x, cls1->GetY()-cls0->GetY());
+    hdz->Fill(qy2x, cls1->GetZ()-cls0->GetZ());
+    //
+    if (dbg.mtcO && !dbg.mtcH) {
+      hdy0->Fill(qy2x, cls1->GetY()-cls0->GetY());
+      hdz0->Fill(qy2x, cls1->GetZ()-cls0->GetZ());     
+    }
+    //
+    if (!dbg.mtcO && dbg.mtcH) {
+      hdy1->Fill(qy2x, cls1->GetY()-cls0->GetY());
+      hdz1->Fill(qy2x, cls1->GetZ()-cls0->GetZ());     
+    }
+  }
+}
+
+//___________________________________________________________
+Float_t CompareTracks(AliExternalTrackParam &par0,AliExternalTrackParam &par1)
 {
   float chi2 = 2*kHugeChi;
-  AliExternalTrackParam* par0 = (AliExternalTrackParam*)trc0->GetInnerParam();
-  AliExternalTrackParam* par1 = (AliExternalTrackParam*)trc1->GetInnerParam();
-  double alp0 = par0->GetAlpha(), alp1 = par1->GetAlpha();
+  double alp0 = par0.GetAlpha(), alp1 = par1.GetAlpha();
   double dalpha = TMath::Abs(alp0-alp1);
   if (dalpha>25*TMath::DegToRad()) return chi2; // at least neighbouring sectors
   //
-  if (dalpha>1e-3 && !par1->Rotate(alp0)) return chi2;
-  if (TMath::Abs(par0->GetX()-par1->GetX())>1e-3) {
+  if (dalpha>FLT_EPSILON && !par1.Rotate(alp0)) return chi2;
+  if (TMath::Abs(par0.GetX()-par1.GetX())>FLT_EPSILON) {
     AliMagF* fld = (AliMagF*)TGeoGlobalMagField::Instance()->GetField();
     Double_t xyz[3],b[3];
-    par1->GetXYZ(xyz);
+    par1.GetXYZ(xyz);
     fld->Field(xyz,b);
-    if (!par1->PropagateToBxByBz(par0->GetX(),b)) return chi2;
+    if (!par1.PropagateToBxByBz(par0.GetX(),b)) return chi2;
   }
   //
-  chi2 = par0->GetPredictedChi2(par1);
+  chi2 = par0.GetPredictedChi2(&par1);
   //
   return chi2;
 }
@@ -117,13 +206,16 @@ Bool_t AcceptTrack(AliESDtrack* trc)
   trc->SetBit(kTestBit);
   trc->ResetBit(kAccBit);
   if (!trc->IsOn(AliESDtrack::kTPCin)) return kFALSE;
-  if (trc->GetNcls(1)<70) return kFALSE;
+  if (trc->GetNcls(1)<kMinCls) return kFALSE;
+  if (trc->Pt()<kMinPt) return kFALSE;
+  double x = trc->GetInnerParam()->GetX();
+  if (x<80 || x>85) return kFALSE;
   float dy,dz;
-  if (TMath::Abs(trc->GetTPCInnerParam()->GetX())<2) return kFALSE;
+  if (TMath::Abs(trc->GetTPCInnerParam()->GetX())>2) return kFALSE;
   trc->GetImpactParametersTPC(dy,dz);
-  if (TMath::Abs(dy)>3 || TMath::Abs(dz)>3) return kFALSE;
+  if (TMath::Abs(dy)>kMaxDCAY || TMath::Abs(dz)>kMaxDCAZ) return kFALSE;
   double eta = trc->Eta();
-  if (TMath::Abs(eta)>0.8) return kFALSE;
+  if (TMath::Abs(eta)>kMaxEta) return kFALSE;
   trc->SetBit(kAccBit);
   return kTRUE;
 }
@@ -221,4 +313,70 @@ void SetSlot(int s)
     exit(1);
   }
   currSlot = s;
+}
+
+float GetRowX(int row)
+{
+  const float kPadRowX[159] = {
+    85.225, 85.975, 86.725, 87.475, 88.225, 88.975, 89.725, 90.475, 91.225, 91.975, 92.725, 93.475, 94.225, 94.975, 95.725,
+    96.475, 97.225, 97.975, 98.725, 99.475,100.225,100.975,101.725,102.475,103.225,103.975,104.725,105.475,106.225,106.975,
+    107.725,108.475,109.225,109.975,110.725,111.475,112.225,112.975,113.725,114.475,115.225,115.975,116.725,117.475,118.225,
+    118.975,119.725,120.475,121.225,121.975,122.725,123.475,124.225,124.975,125.725,126.475,127.225,127.975,128.725,129.475,
+    130.225,130.975,131.725,135.100,136.100,137.100,138.100,139.100,140.100,141.100,142.100,143.100,144.100,145.100,146.100,
+    147.100,148.100,149.100,150.100,151.100,152.100,153.100,154.100,155.100,156.100,157.100,158.100,159.100,160.100,161.100,
+    162.100,163.100,164.100,165.100,166.100,167.100,168.100,169.100,170.100,171.100,172.100,173.100,174.100,175.100,176.100,
+    177.100,178.100,179.100,180.100,181.100,182.100,183.100,184.100,185.100,186.100,187.100,188.100,189.100,190.100,191.100,
+    192.100,193.100,194.100,195.100,196.100,197.100,198.100,199.350,200.850,202.350,203.850,205.350,206.850,208.350,209.850,
+    211.350,212.850,214.350,215.850,217.350,218.850,220.350,221.850,223.350,224.850,226.350,227.850,229.350,230.850,232.350,
+    233.850,235.350,236.850,238.350,239.850,241.350,242.850,244.350,245.850
+  };
+  return kPadRowX[row];
+}
+
+//______________________________________
+void BookDebugTree(const char* dbgName)
+{
+  //
+  //
+  {
+    hh  = new TH2F("hh","chi2",100,-0.2,0.2,100,0.,5.);
+    hdy = new TH2F("hdy","hdy",100,-0.2,0.2,200,-0.5,0.5);
+    hdz = new TH2F("hdz","hdz",100,-0.2,0.2,200,-0.5,0.5);
+    hdy0 = new TH2F("hdy0","hdy0",100,-0.2,0.2,200,-0.5,0.5);
+    hdz0 = new TH2F("hdz0","hdz0",100,-0.2,0.2,200,-0.5,0.5);
+    hdy1 = new TH2F("hdy1","hdy1",100,-0.2,0.2,200,-0.5,0.5);
+    hdz1 = new TH2F("hdz1","hdz1",100,-0.2,0.2,200,-0.5,0.5);
+  }
+  //
+  DebugFile = new TFile(dbgName,"recreate");
+  DebugTree = new TTree("clsTr","clsTree");
+  clsODbg = new AliTPCclusterMI();
+  clsHDbg = new AliTPCclusterMI();  
+  DebugTree->Branch("clsO","AliTPCclusterMI",&clsODbg);
+  DebugTree->Branch("clsH","AliTPCclusterMI",&clsHDbg);
+  DebugTree->Branch("dbg",&dbg,"q2pt/F:chi2/F:mtcO/O:mtcH/O");
+  //
+  DebugTree->SetAlias("dy","clsO.fY-clsH.fY");
+  DebugTree->SetAlias("dz","clsO.fZ-clsH.fZ");
+  DebugTree->SetAlias("qy2x","clsO.fY/clsO.fX*sign(q2pt)");
+  DebugTree->SetAlias("sect","(clsO.fDetector%18)");
+}
+
+//______________________________________
+void CloseDebugTree()
+{
+  DebugFile->cd();
+  DebugTree->Write();
+  delete DebugTree;
+  //
+  hh->Write();
+  hdy->Write();
+  hdz->Write();
+  hdy0->Write();
+  hdz0->Write();
+  hdy1->Write();
+  hdz1->Write();
+  //
+  DebugFile->Close();
+  delete DebugFile;
 }
