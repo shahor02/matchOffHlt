@@ -27,16 +27,30 @@ const float kMaxEta = 0.8;
 const float kMinPt = 1.;
 //-------------- cuts -------------<<<
 
-TTree *DebugTree=0;
+TTree *dbgTreeCl=0,*dbgTreeTr=0;
 TFile *DebugFile=0;
 AliTPCclusterMI *clsODbg=0,*clsHDbg=0;
+AliExternalTrackParam *trODbg=0,*trHDbg=0;
 typedef struct {
   Float_t q2pt;
   Float_t chi2;
   Bool_t mtcO;
   Bool_t mtcH;
-} dbg_t;
-dbg_t dbg;
+} dbgCl_t;
+dbgCl_t dbgCl;
+
+typedef struct {
+  ULong64_t flgO;
+  ULong64_t flgH;
+  Float_t chi2mtc;
+  Float_t chi2O;
+  Float_t chi2H;
+  Int_t   nclO;
+  Int_t   nclH;
+  Bool_t mtcO;
+  Bool_t mtcH;
+} dbgTr_t;
+dbgTr_t dbgTr;
   
 int currEvent=-1;
 int currSlot=0;
@@ -56,21 +70,15 @@ Bool_t AcceptTrack(AliESDtrack* trc);
 Float_t CompareTracks(AliExternalTrackParam &par0,AliExternalTrackParam &par1);
 void ProcessEvent();
 void FillSeedsInfo(int itr0,int itr1);
-void CloseDebugTree();
-void BookDebugTree(const char* dbgName);
+void CloseDbgTree();
+void BookDbgTree(const char* dbgName);
 
-
-
-TH2F *hh=0,*hdy=0,*hdz=0,
-			*hdy0=0,*hdz0=0,
-			*hdy1=0,*hdz1=0;
-
-void CompOfflHLT(const char* pathOffl, const char* pathHLT, const char* dbgName="clsDbg.root")
+void CompOfflHLT(const char* pathOffl, const char* pathHLT, const char* dbgName="dbgTree.root")
 {
   //
   Bool_t friends=kTRUE;
   //
-  BookDebugTree(dbgName);
+  BookDbgTree(dbgName);
   //
   SetSlot(0);
   int nevOffl = LoadESD(pathOffl,friends);
@@ -91,7 +99,7 @@ void CompOfflHLT(const char* pathOffl, const char* pathHLT, const char* dbgName=
     ProcessEvent();
   }
   //
-  CloseDebugTree();
+  CloseDbgTree();
 }
 
 //===========================================================
@@ -107,16 +115,16 @@ void ProcessEvent()
     chiMatch[itr0] = kHugeChi;
     AliESDtrack* trc0 = esdEv[0]->GetTrack(itr0);    
     if (!AcceptTrack(trc0)) continue;
-    AliExternalTrackParam par0 = *trc0->GetInnerParam();
+    *trODbg = *trc0->GetInnerParam();
     //
     for (int itr1=0;itr1<ntr1;itr1++) {
       AliESDtrack* trc1 = esdEv[1]->GetTrack(itr1);
       if (trc0->Charge()!=trc1->Charge()) continue;
       if (!AcceptTrack(trc1)) continue;
       //
-      AliExternalTrackParam par1 = *trc1->GetInnerParam();
+      *trHDbg = *trc1->GetInnerParam();
       //
-      float chi2 = CompareTracks(par0,par1);
+      float chi2 = CompareTracks(*trODbg,*trHDbg);
       if (chi2<chiMatch[itr0]) {
 	chiMatch[itr0] = chi2;
 	bestMatch[itr0] = itr1;
@@ -125,10 +133,21 @@ void ProcessEvent()
     }
     if (bestMatch[itr0]<0) continue;
     //
-    double qy2x = par0.GetY()/par0.GetX()*par0.Charge();
+    //    double qy2x = par0.GetY()/par0.GetX()*par0.Charge();
     //    printf("Ev.%4d | tr %4d -> %4d | %f %+.4f (%+f %+f)\n",currEvent,itr0,bestMatch[itr0],chiMatch[itr0],qy2x,par0.GetY(),par0.GetX());
-    hh->Fill(qy2x,chiMatch[itr0]);
-    dbg.chi2 = chiMatch[itr0];
+    AliESDtrack* trc1 = esdEv[1]->GetTrack(bestMatch[itr0]);
+    //
+    dbgTr.chi2mtc = dbgCl.chi2 = chiMatch[itr0];
+    //
+    dbgTr.chi2O = trc0->GetTPCchi2();
+    dbgTr.flgO = trc0->GetStatus();
+    dbgTr.nclO = trc0->GetTPCncls();
+    //
+    dbgTr.chi2H = trc1->GetTPCchi2();
+    dbgTr.flgH = trc1->GetStatus();
+    dbgTr.nclH = trc1->GetTPCncls();
+    //
+    dbgTreeTr->Fill();
     FillSeedsInfo(itr0,bestMatch[itr0]);
     //
   }  
@@ -146,9 +165,9 @@ void FillSeedsInfo(int itr0,int itr1)
   const AliTPCseed* sd1 = (AliTPCseed*)trf1->GetTPCseed();
   if (!sd0||!sd1) return;
   //
-  dbg.mtcO = trc0->IsOn(AliESDtrack::kITSrefit);
-  dbg.mtcH = trc1->IsOn(AliESDtrack::kITSrefit);  
-  dbg.q2pt = trc0->GetParameter()[4];
+  dbgCl.mtcO = trc0->IsOn(AliESDtrack::kITSrefit);
+  dbgCl.mtcH = trc1->IsOn(AliESDtrack::kITSrefit);  
+  dbgCl.q2pt = trc0->GetParameter()[4];
 
   // fill clusters difference
   for (int ir=0;ir<159;ir++) {
@@ -158,21 +177,8 @@ void FillSeedsInfo(int itr0,int itr1)
     //
     *clsODbg = *cls0;
     *clsHDbg = *cls1;    
-    DebugTree->Fill();
+    dbgTreeCl->Fill();
     //
-    float qy2x = cls0->GetY()/GetRowX(ir)*trc0->Charge();
-    hdy->Fill(qy2x, cls1->GetY()-cls0->GetY());
-    hdz->Fill(qy2x, cls1->GetZ()-cls0->GetZ());
-    //
-    if (dbg.mtcO && !dbg.mtcH) {
-      hdy0->Fill(qy2x, cls1->GetY()-cls0->GetY());
-      hdz0->Fill(qy2x, cls1->GetZ()-cls0->GetZ());     
-    }
-    //
-    if (!dbg.mtcO && dbg.mtcH) {
-      hdy1->Fill(qy2x, cls1->GetY()-cls0->GetY());
-      hdz1->Fill(qy2x, cls1->GetZ()-cls0->GetZ());     
-    }
   }
 }
 
@@ -334,48 +340,40 @@ float GetRowX(int row)
 }
 
 //______________________________________
-void BookDebugTree(const char* dbgName)
+void BookDbgTree(const char* dbgName)
 {
   //
-  //
-  {
-    hh  = new TH2F("hh","chi2",100,-0.2,0.2,100,0.,5.);
-    hdy = new TH2F("hdy","hdy",100,-0.2,0.2,200,-0.5,0.5);
-    hdz = new TH2F("hdz","hdz",100,-0.2,0.2,200,-0.5,0.5);
-    hdy0 = new TH2F("hdy0","hdy0",100,-0.2,0.2,200,-0.5,0.5);
-    hdz0 = new TH2F("hdz0","hdz0",100,-0.2,0.2,200,-0.5,0.5);
-    hdy1 = new TH2F("hdy1","hdy1",100,-0.2,0.2,200,-0.5,0.5);
-    hdz1 = new TH2F("hdz1","hdz1",100,-0.2,0.2,200,-0.5,0.5);
-  }
-  //
   DebugFile = new TFile(dbgName,"recreate");
-  DebugTree = new TTree("clsTr","clsTree");
+  //
+  dbgTreeCl = new TTree("clsTr","clsTree");
   clsODbg = new AliTPCclusterMI();
   clsHDbg = new AliTPCclusterMI();  
-  DebugTree->Branch("clsO","AliTPCclusterMI",&clsODbg);
-  DebugTree->Branch("clsH","AliTPCclusterMI",&clsHDbg);
-  DebugTree->Branch("dbg",&dbg,"q2pt/F:chi2/F:mtcO/O:mtcH/O");
+  dbgTreeCl->Branch("clsO","AliTPCclusterMI",&clsODbg);
+  dbgTreeCl->Branch("clsH","AliTPCclusterMI",&clsHDbg);
+  dbgTreeCl->Branch("dbgCl",&dbgCl,"q2pt/F:chi2/F:mtcO/O:mtcH/O");
   //
-  DebugTree->SetAlias("dy","clsO.fY-clsH.fY");
-  DebugTree->SetAlias("dz","clsO.fZ-clsH.fZ");
-  DebugTree->SetAlias("qy2x","clsO.fY/clsO.fX*sign(q2pt)");
-  DebugTree->SetAlias("sect","(clsO.fDetector%18)");
+  dbgTreeCl->SetAlias("dy","clsO.fY-clsH.fY");
+  dbgTreeCl->SetAlias("dz","clsO.fZ-clsH.fZ");
+  dbgTreeCl->SetAlias("qy2x","clsO.fY/clsO.fX*sign(q2pt)");
+  dbgTreeCl->SetAlias("sect","(clsO.fDetector%18)");
+  //
+  dbgTreeTr = new TTree("trTr","TracksTree");
+  trODbg = new AliExternalTrackParam();
+  trHDbg = new AliExternalTrackParam();
+  dbgTreeTr->Branch("trO","AliExternalTrackParam",&trODbg);
+  dbgTreeTr->Branch("trH","AliExternalTrackParam",&trHDbg);
+  dbgTreeTr->Branch("dbgTr",&dbgTr,"flgO/l:flgH/l:chi2mtc/F:chi2O/F:chi2H/F:nclO/I:nclH/I:mtcO/O:mtcH/O");
+  //
 }
 
 //______________________________________
-void CloseDebugTree()
+void CloseDbgTree()
 {
   DebugFile->cd();
-  DebugTree->Write();
-  delete DebugTree;
-  //
-  hh->Write();
-  hdy->Write();
-  hdz->Write();
-  hdy0->Write();
-  hdz0->Write();
-  hdy1->Write();
-  hdz1->Write();
+  dbgTreeCl->Write();
+  delete dbgTreeCl;
+  dbgTreeTr->Write();
+  delete dbgTreeTr;
   //
   DebugFile->Close();
   delete DebugFile;
