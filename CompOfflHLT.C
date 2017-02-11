@@ -142,10 +142,13 @@ void ProcessEvent()
     dbgTr.chi2O = trc0->GetTPCchi2();
     dbgTr.flgO = trc0->GetStatus();
     dbgTr.nclO = trc0->GetTPCncls();
+    dbgTr.mtcO = trc0->IsOn(AliESDtrack::kITSrefit);
     //
     dbgTr.chi2H = trc1->GetTPCchi2();
     dbgTr.flgH = trc1->GetStatus();
     dbgTr.nclH = trc1->GetTPCncls();
+    dbgTr.mtcH = trc1->IsOn(AliESDtrack::kITSrefit);  
+
     //
     dbgTreeTr->Fill();
     FillSeedsInfo(itr0,bestMatch[itr0]);
