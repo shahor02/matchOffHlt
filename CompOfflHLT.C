@@ -122,12 +122,12 @@ void ProcessEvent()
       if (trc0->Charge()!=trc1->Charge()) continue;
       if (!AcceptTrack(trc1)) continue;
       //
-      *trHDbg = *trc1->GetInnerParam();
-      //
-      float chi2 = CompareTracks(*trODbg,*trHDbg);
+      AliExternalTrackParam trp = *trc1->GetInnerParam();
+      float chi2 = CompareTracks(*trODbg,trp);
       if (chi2<chiMatch[itr0]) {
 	chiMatch[itr0] = chi2;
 	bestMatch[itr0] = itr1;
+	*trHDbg = trp;      //
       }
       //
     }
