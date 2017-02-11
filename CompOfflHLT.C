@@ -360,6 +360,8 @@ void BookDbgTree(const char* dbgName)
   dbgTreeCl->SetAlias("dz","clsO.fZ-clsH.fZ");
   dbgTreeCl->SetAlias("qy2x","clsO.fY/clsO.fX*sign(q2pt)");
   dbgTreeCl->SetAlias("sect","(clsO.fDetector%18)");
+  dbgTreeCl->SetAlias("side","(int(clsO.fDetector/18)&0x1)");
+  dbgTreeCl->SetAlias("row","clsO.fRow+63*(clsO.fDetector>35)")
   //
   dbgTreeTr = new TTree("trTr","TracksTree");
   trODbg = new AliExternalTrackParam();
