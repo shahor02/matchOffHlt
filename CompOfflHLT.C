@@ -25,6 +25,7 @@ const float kMaxDCAY = 3;
 const float kMaxDCAZ = 3;
 const float kMaxEta = 0.8;
 const float kMinPt = 1.;
+const float kMaxChiMtc = 100.;
 //-------------- cuts -------------<<<
 
 TTree *dbgTreeCl=0,*dbgTreeTr=0;
@@ -131,7 +132,7 @@ void ProcessEvent()
       }
       //
     }
-    if (bestMatch[itr0]<0) continue;
+    if (bestMatch[itr0]<0 || chiMatch[itr0]>kMaxChiMtc) continue;
     //
     //    double qy2x = par0.GetY()/par0.GetX()*par0.Charge();
     //    printf("Ev.%4d | tr %4d -> %4d | %f %+.4f (%+f %+f)\n",currEvent,itr0,bestMatch[itr0],chiMatch[itr0],qy2x,par0.GetY(),par0.GetX());
@@ -367,6 +368,7 @@ void BookDbgTree(const char* dbgName)
   dbgTreeTr->Branch("trH","AliExternalTrackParam",&trHDbg);
   dbgTreeTr->Branch("dbgTr",&dbgTr,"flgO/l:flgH/l:chi2mtc/F:chi2O/F:chi2H/F:nclO/I:nclH/I:mtcO/O:mtcH/O");
   //
+  dbgTreeTr->SetAlias("qy2x","trO.fP[0]/trO.fX*sign(trO.fP[4])");
 }
 
 //______________________________________
